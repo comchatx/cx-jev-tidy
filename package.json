@@ -1,0 +1,51 @@
+{
+  "name": "cx-jev-tidy",
+  "version": "0.1.0",
+  "description": "A pi package that cuts stale tool output with Jev when pi's context fills, keeping every word, before pi summarises.",
+  "license": "MIT",
+  "author": "ComChatX",
+  "homepage": "https://github.com/comchatx/cx-jev-tidy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/comchatx/cx-jev-tidy.git"
+  },
+  "bugs": "https://github.com/comchatx/cx-jev-tidy/issues",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./dist/extensions"
+    ]
+  },
+  "files": [
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@types/node": "26.2.0",
+    "esbuild": "0.27.2",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  },
+  "overrides": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-mcp": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
+    "@earendil-works/pi-codemode": "1.1.0",
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-telemetry": "1.1.0"
+  }
+}
