@@ -1,6 +1,6 @@
 {
   "name": "cx-jev-tidy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A pi package that cuts stale tool output with Jev when pi's context fills, keeping every word, before pi summarises.",
   "license": "MIT",
   "author": "ComChatX",
