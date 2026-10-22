@@ -8,22 +8,43 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
+  # The tests run on the box's base image and Debian's packages, so the jq and bash they use are the box's; this job holds no token.
+  check:
     runs-on: ubuntu-latest
+    container: node:24-bookworm-slim
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq python3
+      - uses: actions/checkout@v5
+      - run: jq --version && bash --version | head -1 && node --version
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Only a commit main holds is published: a tag on any other commit stops here, before anything is installed.
+      - name: The tagged commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+      - name: The tag names the version being published
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
       # Trusted publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@11
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - name: The tag names the version being published
-        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      # No dependency's install script runs beside the token; the package's own prepack still builds what is published.
+      - run: npm ci --ignore-scripts
       - run: npm publish --provenance --access public

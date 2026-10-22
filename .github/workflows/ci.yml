@@ -11,11 +11,12 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The box's base image and Debian's packages, so the script's tests run on the jq and bash the box has.
+    container: node:24-bookworm-slim
     steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq python3
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
+      - run: jq --version && bash --version | head -1 && node --version
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
