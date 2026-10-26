@@ -1,7 +1,7 @@
 import {
   estimateTokens,
-  findCutPoint,
   getAgentDir,
+  sessionEntryToContextMessages,
   SettingsManager,
   shouldCompact,
   type BoundaryResult,
@@ -10,7 +10,6 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ProjectedSessionEntry,
-  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { decide, type CallDecision } from "../core/decide.js";
 import { httpAsker, JevError, type JevAsker } from "../core/jev.js";
@@ -79,18 +78,46 @@ export function provenance(input: Readonly<Record<string, unknown>>, output: str
   return { paid: receipt !== undefined || (typeof input["command"] === "string" && runsCx(input["command"])), landed: receipt?.landed ?? [] };
 }
 
+/** A message pi may cut the context before: anything but a tool result, which stays with its call. */
+const CUT_POINT_ROLES: ReadonlySet<string> = new Set(["user", "assistant", "bashExecution", "custom", "branchSummary", "compactionSummary"]);
+
 /**
- * Where pi's recent window starts, as the pinned pi's own cut point finds it for `keepRecentTokens` over what the model sees now: an entry
- * a past edit left empty counts for nothing, one it cut counts as cut. The entry ids from there on.
+ * Where pi's recent window starts: pi 1.1.0's own cut point for compaction (its `findProjectedCutPoint`, which it does not export),
+ * mirrored over what it exports. Every entry counts what its projection gives the model — an omitted message or custom message nothing,
+ * a cut one its cut text, a compaction a later one superseded nothing — from after the compaction the projection opens with. The entry
+ * ids from there on.
  */
 export function keptFrom(entries: readonly ProjectedSessionEntry[], keepRecentTokens: number): ReadonlySet<string> {
-  const seen = entries.map(({ sourceEntry, messages }): SessionEntry => {
-    if (sourceEntry.type !== "message") return sourceEntry;
-    return messages.length === 1 ? { ...sourceEntry, message: messages[0]! } : { type: "custom", customType: "cx-jev-tidy-omitted", id: sourceEntry.id, parentId: sourceEntry.parentId, timestamp: sourceEntry.timestamp };
-  });
-  const after = entries.findLastIndex((entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0) + 1;
-  const { firstKeptEntryIndex } = findCutPoint(seen, after, seen.length, keepRecentTokens);
-  return new Set(entries.slice(firstKeptEntryIndex).map((entry) => entry.sourceEntry.id));
+  const start = entries.findIndex((entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0) + 1;
+  const cutPoints = entries.flatMap((entry, index) => (index >= start && entry.sourceEntry.type !== "compaction" && entry.messages.some((message) => CUT_POINT_ROLES.has(message.role)) ? [index] : []));
+  let cut = cutPoints[0] ?? start;
+  let exceeded = false;
+  let kept = 0;
+  for (let index = entries.length - 1; index >= start && cutPoints.length > 0; index -= 1) {
+    const tokens = entries[index]!.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    if (tokens === 0) continue;
+    kept += tokens;
+    if (kept >= keepRecentTokens) {
+      exceeded = true;
+      cut = cutPoints.find((candidate) => candidate >= index) ?? cutPoints.at(-1)!;
+      break;
+    }
+  }
+  // pi moves past a closed tail of omitted recovery attempts, and back over entries that give the model nothing.
+  const suffix = entries.slice(cut + 1);
+  const visible = (entry: ProjectedSessionEntry): boolean => entry.sourceEntry.type !== "context_edit" && sessionEntryToContextMessages(entry.sourceEntry).length > 0;
+  const omitted = (entry: ProjectedSessionEntry): boolean => visible(entry) && entry.messages.length === 0;
+  const omittedIds = new Set(suffix.filter(omitted).map((entry) => entry.sourceEntry.id));
+  const replaced = suffix.some((entry) => entry.sourceEntry.type === "context_edit" && entry.sourceEntry.replacement !== null && !omittedIds.has(entry.sourceEntry.targetId));
+  if (cutPoints.length > 0 && exceeded && !replaced
+    && suffix.some((entry) => entry.sourceEntry.type === "message" && entry.sourceEntry.message.role === "assistant" && omitted(entry))
+    && suffix.every((entry) => entry.sourceEntry.type !== "compaction" && (!visible(entry) || omitted(entry)))) cut += 1;
+  while (cut > start) {
+    const previous = entries[cut - 1]!;
+    if (previous.sourceEntry.type === "compaction" || previous.messages.length > 0) break;
+    cut -= 1;
+  }
+  return new Set(entries.slice(cut).map((entry) => entry.sourceEntry.id));
 }
 
 /**

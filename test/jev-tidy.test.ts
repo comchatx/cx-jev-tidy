@@ -1,10 +1,12 @@
-import { estimateTokens, findCutPoint, SettingsManager, type ExtensionAPI, type ContextEditEntryDraft } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, findCutPoint, SessionManager, SettingsManager, type ExtensionAPI, type ContextEditEntryDraft } from "@earendil-works/pi-coding-agent";
+// pi's own compaction plan, which its package root does not export: the witness the window is held against.
+import { prepareCompaction } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { httpAsker, JevError, type JevAsker, type JevQuestions, type JevState } from "../src/core/jev.js";
 import { assistant, boundaryOver, contextAt, output, result, shell, user, workingSession } from "./conversation.js";
-import { HEAD_CHARS, jevTidy, MAX_FREED, MIN_FREED, PASS_ENTRY, tidy, type Deps, type PassRecord } from "../src/extensions/jev-tidy.js";
+import { HEAD_CHARS, jevTidy, keptFrom, MAX_FREED, MIN_FREED, PASS_ENTRY, tidy, type Deps, type PassRecord } from "../src/extensions/jev-tidy.js";
 
 /** A 1M-window model whose line is 200,000 tokens of context (a ComChatX box's), so a reserve of 800,000. */
 const LINE_SETTINGS = { enabled: true, reserveTokens: 800_000, keepRecentTokens: 20_000 };
@@ -394,6 +396,14 @@ describe("where a call is paid, read where it is certain", () => {
     expect((await pass("cx get amazon/us/B0/product --json", json)).text).toBe(json);
   });
 
+  it("reads as a receipt one whose outcome word cx does not know, and keeps it whole and unasked, in text and in --json", async () => {
+    const text = ["amazon/us/B0/product  settled  Keepa  as of 2026-10-26T10:00:00Z  -> /tenant/amazon/us/B0/product.json", ...Array.from({ length: 10 }, (_, n) => `header: x-trace-${n}: ${"t".repeat(40)}`), "cost: settled $0.01 (Keepa: 14 tokens)"].join("\n");
+    const run = await pass("./fetch-products.sh", text);
+    expect([run.called, run.text, run.asked.includes("call_t1")]).toEqual([true, text, false]);
+    const json = JSON.stringify({ served_from_tree: false, paths: [{ path: "amazon/us/B0/product", outcome: { kind: "unrecognised", word: "settled" }, file: "/tenant/amazon/us/B0/product.json", note: "n".repeat(600) }], cost: [] });
+    expect((await pass("./fetch-products.sh", json)).text).toBe(json);
+  });
+
   it("takes a --json receipt's file from its own field, escapes resolved", async () => {
     const file = '/tenant/raw/keepa/answer-with-"quote.json';
     const text = JSON.stringify({ served_from_tree: false, paths: [{ path: "keepa /product", outcome: { kind: "fresh" }, file, http_headers: [["x", "h".repeat(600)]] }], cost: [] });
@@ -428,5 +438,54 @@ describe("the request to Jev", () => {
     } finally {
       for (const server of [sink, redirect]) { server.closeAllConnections(); await new Promise<void>((done) => server.close(() => done())); }
     }
+  });
+});
+
+describe("pi's recent window, measured on what the model sees", () => {
+  const SETTINGS = { enabled: true, reserveTokens: 50_000, keepRecentTokens: 30_000 };
+  /** Where pi's own compaction would keep from, and where the pass holds from, as indices of the projection; and what the pass touched. */
+  async function measured(session: SessionManager, keepRecentTokens = SETTINGS.keepRecentTokens) {
+    const projection = session.buildSessionProjection();
+    const at = (id: string): number => projection.entries.findIndex((entry) => entry.sourceEntry.id === id);
+    const pi = at(prepareCompaction(session.getBranch(), { ...SETTINGS, keepRecentTokens })!.firstKeptEntryId);
+    const held = keptFrom(projection.entries, keepRecentTokens);
+    const from = projection.entries.findIndex((entry) => held.has(entry.sourceEntry.id));
+    const out = await tidy(boundaryOver(session), contextAt(60_000, 100_000), depsWith(fakeJev(() => 0.1).asker, { ...SETTINGS, keepRecentTokens }));
+    return { pi, from, touched: edits(out?.entries).map((edit) => at(edit.targetId)) };
+  }
+  /** A long answer and an old read past the window, then what the case adds before the newest message. */
+  const opened = (): SessionManager => {
+    const session = workingSession(0, 0);
+    session.appendMessage(assistant("m".repeat(120_000)));
+    session.appendMessage(assistant("Reading.", [{ id: "old", path: "a" }]));
+    session.appendMessage(result("old", "r".repeat(80_000)));
+    return session;
+  };
+
+  it.each([
+    ["an omitted custom message", (session: SessionManager) => { const id = session.appendCustomMessageEntry("fixture", "c".repeat(200_000), false); session.appendMessage(user("latest")); session.appendContextEdit(id, null); }],
+    ["a cut custom message", (session: SessionManager) => { const id = session.appendCustomMessageEntry("fixture", "c".repeat(200_000), false); session.appendMessage(user("latest")); session.appendContextEdit(id, { content: "tiny" }); }],
+    ["a compaction a later one superseded", (session: SessionManager) => { const first = session.getBranch()[0]!.id; session.appendCompaction("s".repeat(200_000), first, 100_000); session.appendMessage(user("after first")); session.appendCompaction("new summary", first, 100_000); session.appendMessage(user("latest")); }],
+  ])("holds from where pi's own compaction keeps, past %s, and edits nothing from there", async (_, add) => {
+    const session = opened();
+    add(session);
+    const { pi, from, touched } = await measured(session);
+    expect(from).toBe(pi);
+    expect(touched.filter((index) => index >= pi)).toEqual([]);
+  });
+
+  it("holds from pi's own index over messages a past pass edited, and past a closed tail of omitted recovery attempts", async () => {
+    const edited = workingSession(20, 20_000);
+    edited.appendContextEdit(edited.getBranch()[2]!.id, null);
+    edited.appendContextEdit(edited.getBranch()[6]!.id, { content: "short" });
+    const ordinary = await measured(edited, 25_000);
+    expect(ordinary.from).toBe(ordinary.pi);
+    const recovery = workingSession(0, 0);
+    recovery.appendMessage(user("u".repeat(120_000)));
+    recovery.appendContextEdit(recovery.appendMessage(assistant("abandoned attempt")), null);
+    const projection = recovery.buildSessionProjection();
+    const pi = projection.entries.findIndex((entry) => entry.sourceEntry.id === prepareCompaction(recovery.getBranch(), { ...SETTINGS, keepRecentTokens: 20_000 })!.firstKeptEntryId);
+    const held = keptFrom(projection.entries, 20_000);
+    expect(projection.entries.findIndex((entry) => held.has(entry.sourceEntry.id))).toBe(pi);
   });
 });

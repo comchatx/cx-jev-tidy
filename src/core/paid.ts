@@ -81,7 +81,9 @@ function readText(text: string): ReceiptRead | undefined {
   for (const line of lines.slice(0, -1)) {
     if (FACT_LINE.test(line)) continue;
     const fields = line.split("  ");
-    if (fields.length < 2 || fields[0]!.length === 0 || !OUTCOME_WORDS.test(fields[1]!)) { certain = false; continue; }
+    if (fields.length < 2 || fields[0]!.length === 0 || !/^\S/.test(fields[1]!)) { certain = false; continue; }
+    // cx prints an outcome word it does not know as it came: the line is still a path line, read without certainty.
+    if (!OUTCOME_WORDS.test(fields[1]!)) { files.push(undefined); continue; }
     const arrow = line.lastIndexOf("  -> ");
     files.push(LANDED_WORDS.test(fields[1]!) && arrow !== -1 && line[arrow + 5] === "/" ? line.slice(arrow + 5) : undefined);
   }
