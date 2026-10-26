@@ -6,13 +6,21 @@ A [pi](https://pi.dev) package that, when pi's context fills, asks Jev (TypeSafe
 
 pi decides when the context is full: past the context window minus its reserve, for the current model. The package takes over none of that. At pi's two boundaries, `turn_end` and `agent_before_settle`, it runs one pass when the turn completed, compaction is on, pi's own context usage is past pi's own line, and there is a message no pass has seen yet.
 
-For each tool call outside the first message and the newest six, Jev answers two questions — does knowing the call was made still matter, and must its full output stay — and the pass proposes, through pi's `context_edit` entries:
+For each tool call outside the first message and pi's recent window, Jev answers two questions — does knowing the call was made still matter, and must its full output stay — and the pass proposes, through pi's `context_edit` entries:
 
 - keep it;
 - cut its output to the first 300 characters and a note of what went (`[cx-jev-tidy cut N chars and 1 image of this tool result]`); an output already short is left as it is;
-- drop the call with its output.
+- drop the call with its output, leaving one line where the call stood, so the model reads that the command ran and that its result is gone: `[cx-jev-tidy dropped this bash call and its result: <the input's first line>]`.
 
-Text is never edited, and pi's session file keeps every original entry; an edit changes only what the next request carries. A pass that would free under a quarter of the context proposes nothing, and so does every failure, leaving one line on stderr; either way pi's own summary follows, as it would without the package. The package hooks nothing of compaction itself, so a manual compaction and overflow recovery stay pi's.
+**The recent window** is pi's own `compaction.keepRecentTokens` for the model in use, its `modelOverrides` entry included, read through pi's settings: back from the newest message until that many tokens, as pi's own cut point counts them. Nothing in it is a candidate.
+
+**What was bought stays where it can be read.** A shell command that runs `cx get` or `cx raw` fetched from a supplier through the ComChatX gate, and the seller paid for it; a fetch is not repeated, while a file on disk can be read again, and Jev's standing note says both. Such a call is never dropped. Where its receipt names the files the answers landed at (`-> <path>`, or `"file"` in `--json`), the pass may cut its output to the head and a note naming them (`…; what it fetched is on disk at /tenant/…]`); where it names none, the output stays whole and Jev is not asked about it.
+
+**A pass removes at most half of the context it found**, the oldest of what Jev would let go first; the rest stays as it was. A pass needs a quarter to stand and runs again at the next line, so half is room enough; past it, one pass could leave the model a conversation whose working past is gone, which pi's own summary, written from the whole, would not.
+
+**A pass leaves a record where it ran.** After its edits it writes one `custom` entry, `customType: "cx-jev-tidy"`, into the session, with the context's tokens before and after the pass, how many outputs it cut and calls it dropped, and what the stubs cost (`stubTokens`, already counted in `after`); pi stamps the entry's time. The model never sees it; a page that reads the session can draw it.
+
+Text is never edited, and pi's session file keeps every original entry; an edit changes only what the next request carries. A pass that would free under a quarter of the context proposes nothing and records nothing, and so does every failure, leaving one line on stderr; either way pi's own summary follows, as it would without the package. The package hooks nothing of compaction itself, so a manual compaction and overflow recovery stay pi's.
 
 **What Jev sees**: the user's and the model's text, and each tool call's name and input. A tool output goes only as `ok` or `error` and its length. The model's thinking, the system prompt, skills and summaries are never sent.
 

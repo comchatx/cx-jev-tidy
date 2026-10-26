@@ -1,27 +1,33 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { batchCalls, decideCall, OPTIONS, questionsFor } from "../src/core/decide.js";
+import { batchCalls, decideCall, questionsFor } from "../src/core/decide.js";
 import { httpAsker, JevError, JEV_MODEL } from "../src/core/jev.js";
-import { collectToolCalls, fitState, type TidyMessage } from "../src/core/state.js";
+import { collectToolCalls, fitState, recentFrom, type TidyMessage } from "../src/core/state.js";
 
-const call = (i: number): TidyMessage => ({ entryId: `a${i}`, role: "assistant", text: `Step ${i}: ${"reasoning ".repeat(80)}`, toolCalls: [{ id: `c${i}`, name: "read", arguments: { path: `file-${i}.csv`, note: "x".repeat(900) } }] });
-const outcome = (i: number): TidyMessage => ({ entryId: `r${i}`, role: "toolResult", text: "", toolCalls: [], result: { toolCallId: `c${i}`, chars: 20_000, isError: false } });
+const call = (i: number): TidyMessage => ({ entryId: `a${i}`, role: "assistant", text: `Step ${i}: ${"reasoning ".repeat(80)}`, toolCalls: [{ id: `c${i}`, name: "read", arguments: { path: `file-${i}.csv`, note: "x".repeat(900) } }], tokens: 450 });
+const outcome = (i: number): TidyMessage => ({ entryId: `r${i}`, role: "toolResult", text: "", toolCalls: [], result: { toolCallId: `c${i}`, chars: 20_000, isError: false }, tokens: 5_000 });
 const conversation = (rounds: number): TidyMessage[] => [
-  { entryId: "u0", role: "user", text: "Audit the listings.", toolCalls: [] },
+  { entryId: "u0", role: "user", text: "Audit the listings.", toolCalls: [], tokens: 5 },
   ...Array.from({ length: rounds }, (_, i) => [call(i + 1), outcome(i + 1)]).flat(),
 ];
 
 describe("the decision core", () => {
-  it("pins the first message and the newest six, and pairs each call with its result", () => {
-    const calls = collectToolCalls(conversation(10), OPTIONS.preserveRecentMessages);
+  it("pins the first message and pi's recent window, counted in tokens from the newest back, and pairs each call with its result", () => {
+    const messages = conversation(10);
+    // 20,000 tokens back from the newest: four results of 5,000 reach it at round 7's result, so rounds 7 to 10 stay.
+    expect(recentFrom(messages, 20_000)).toBe(14);
+    const calls = collectToolCalls(messages, recentFrom(messages, 20_000));
     expect(calls).toHaveLength(10);
-    expect(calls.filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c8", "c9", "c10"]);
+    expect(calls.filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c7", "c8", "c9", "c10"]);
+    // A window the conversation never reaches holds all of it; a call the caller holds whole is pinned wherever it stands.
+    expect(recentFrom(messages, 1_000_000)).toBe(0);
+    expect(collectToolCalls(messages, 21, (one) => one.toolCallId === "c2").filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c2"]);
     expect(calls[0]).toMatchObject({ id: "t1", toolCallId: "c1", tool: "read", callIndex: 1, resultIndex: 2, resultChars: 20_000 });
   });
 
   it("keeps a call whose result must stay, cuts a result whose call must stay, and else drops both; a pinned call is always kept", () => {
-    const [unpinned] = collectToolCalls(conversation(10), 6);
+    const [unpinned] = collectToolCalls(conversation(10), 15);
     expect(decideCall(unpinned!, 0.1, 0.9, 0.5)).toBe("keep");
     expect(decideCall(unpinned!, 0.9, 0.1, 0.5)).toBe("drop_result");
     expect(decideCall(unpinned!, 0.1, 0.1, 0.5)).toBe("drop_call");
@@ -30,15 +36,15 @@ describe("the decision core", () => {
 
   it("shrinks a long history in stages to fit Jev's state budget, and refuses one it cannot fit", () => {
     const messages = conversation(200);
-    const calls = collectToolCalls(messages, 6);
-    const fitted = fitState(messages, calls, { maxStateTokens: 25_000, preserveRecentMessages: 6 });
+    const calls = collectToolCalls(messages, 395);
+    const fitted = fitState(messages, calls, { maxStateTokens: 25_000, recentFrom: 395 });
     expect(fitted.tokens).toBeLessThanOrEqual(25_000);
     expect(fitted.stage).not.toBe("full");
-    expect(() => fitState(messages, calls, { maxStateTokens: 500, preserveRecentMessages: 6 })).toThrow(expect.objectContaining({ kind: "oversize" }));
+    expect(() => fitState(messages, calls, { maxStateTokens: 500, recentFrom: 395 })).toThrow(expect.objectContaining({ kind: "oversize" }));
   });
 
   it("batches questions to fit one request beside the state, and refuses when the state leaves no room", () => {
-    const calls = collectToolCalls(conversation(40), 6).filter((c) => !c.pinned);
+    const calls = collectToolCalls(conversation(40), 75).filter((c) => !c.pinned);
     const batches = batchCalls(calls, 29_000, 30_000);
     expect(batches.length).toBeGreaterThan(1);
     expect(batches.flat()).toEqual(calls);
