@@ -3,27 +3,26 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { batchCalls, decideCall, questionsFor } from "../src/core/decide.js";
 import { httpAsker, JevError, JEV_MODEL } from "../src/core/jev.js";
-import { collectToolCalls, fitState, recentFrom, type TidyMessage } from "../src/core/state.js";
+import { runsCx, shellWords } from "../src/core/paid.js";
+import { collectToolCalls, fitState, type TidyMessage } from "../src/core/state.js";
 
-const call = (i: number): TidyMessage => ({ entryId: `a${i}`, role: "assistant", text: `Step ${i}: ${"reasoning ".repeat(80)}`, toolCalls: [{ id: `c${i}`, name: "read", arguments: { path: `file-${i}.csv`, note: "x".repeat(900) } }], tokens: 450 });
-const outcome = (i: number): TidyMessage => ({ entryId: `r${i}`, role: "toolResult", text: "", toolCalls: [], result: { toolCallId: `c${i}`, chars: 20_000, isError: false }, tokens: 5_000 });
+const call = (i: number): TidyMessage => ({ entryId: `a${i}`, role: "assistant", text: `Step ${i}: ${"reasoning ".repeat(80)}`, toolCalls: [{ id: `c${i}`, name: "read", arguments: { path: `file-${i}.csv`, note: "x".repeat(900) } }] });
+const outcome = (i: number): TidyMessage => ({ entryId: `r${i}`, role: "toolResult", text: "", toolCalls: [], result: { toolCallId: `c${i}`, chars: 20_000, isError: false } });
 const conversation = (rounds: number): TidyMessage[] => [
-  { entryId: "u0", role: "user", text: "Audit the listings.", toolCalls: [], tokens: 5 },
+  { entryId: "u0", role: "user", text: "Audit the listings.", toolCalls: [] },
   ...Array.from({ length: rounds }, (_, i) => [call(i + 1), outcome(i + 1)]).flat(),
 ];
 
 describe("the decision core", () => {
-  it("pins the first message and pi's recent window, counted in tokens from the newest back, and pairs each call with its result", () => {
+  it("pins the first message and every call reaching the recent window it is given, and pairs each call with its result", () => {
     const messages = conversation(10);
-    // 20,000 tokens back from the newest: four results of 5,000 reach it at round 7's result, so rounds 7 to 10 stay.
-    expect(recentFrom(messages, 20_000)).toBe(14);
-    const calls = collectToolCalls(messages, recentFrom(messages, 20_000));
+    // The window starting at round 7's result: round 7's call is before it, its result in it, so the pair stays.
+    const calls = collectToolCalls(messages, 14);
     expect(calls).toHaveLength(10);
     expect(calls.filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c7", "c8", "c9", "c10"]);
-    // A window the conversation never reaches holds all of it; a call the caller holds whole is pinned wherever it stands.
-    expect(recentFrom(messages, 1_000_000)).toBe(0);
-    expect(collectToolCalls(messages, 21, (one) => one.toolCallId === "c2").filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c2"]);
     expect(calls[0]).toMatchObject({ id: "t1", toolCallId: "c1", tool: "read", callIndex: 1, resultIndex: 2, resultChars: 20_000 });
+    // A call the caller holds whole is pinned wherever it stands.
+    expect(collectToolCalls(messages, 21, (one) => one.toolCallId === "c2").filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c2"]);
   });
 
   it("keeps a call whose result must stay, cuts a result whose call must stay, and else drops both; a pinned call is always kept", () => {
@@ -100,5 +99,14 @@ describe("asking Jev over HTTP", () => {
 
   it("reads an unreachable proxy as refused", async () => {
     await expect(httpAsker("http://127.0.0.1:1/v1/systemone", {}, 2_000).ask({}, {})).rejects.toMatchObject({ kind: "refused" });
+  });
+});
+
+describe("reading a shell command's words", () => {
+  it("removes quotes and joins continuations as the shell does, reads a nested command's words, and stops at an unclosed quote", () => {
+    expect(shellWords(`a "b \\"c\\" \\$d" 'e f'g h\\ i \\\nj`)).toEqual(["a", 'b "c" $d', "b", "c", "$d", "e fg", "e", "fg", "h i", "h", "i", "j"]);
+    expect(shellWords("x 'unclosed cx")).toEqual(["x", "unclosed cx", "unclosed", "cx"]);
+    expect(shellWords("end\\")).toEqual(["end"]);
+    expect([runsCx("/usr/local/bin/cx/ get"), runsCx("cxx get"), runsCx("echo cx-sources")]).toEqual([true, false, false]);
   });
 });

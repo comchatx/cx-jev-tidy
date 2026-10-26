@@ -12,9 +12,9 @@ For each tool call outside the first message and pi's recent window, Jev answers
 - cut its output to the first 300 characters and a note of what went (`[cx-jev-tidy cut N chars and 1 image of this tool result]`); an output already short is left as it is;
 - drop the call with its output, leaving one line where the call stood, so the model reads that the command ran and that its result is gone: `[cx-jev-tidy dropped this bash call and its result: <the input's first line>]`.
 
-**The recent window** is pi's own `compaction.keepRecentTokens` for the model in use, its `modelOverrides` entry included, read through pi's settings: back from the newest message until that many tokens, as pi's own cut point counts them. Nothing in it is a candidate.
+**The recent window** is what the pinned pi's own cut point (`findCutPoint`) keeps for `compaction.keepRecentTokens` of the model in use, its `modelOverrides` entry included, read through pi's settings, over the conversation as the model sees it now. Nothing in it is a candidate.
 
-**What was bought stays where it can be read.** A shell command that runs `cx get` or `cx raw` fetched from a supplier through the ComChatX gate, and the seller paid for it; a fetch is not repeated, while a file on disk can be read again, and Jev's standing note says both. Such a call is never dropped. Where its receipt names the files the answers landed at (`-> <path>`, or `"file"` in `--json`), the pass may cut its output to the head and a note naming them (`…; what it fetched is on disk at /tenant/…]`); where it names none, the output stays whole and Jev is not asked about it.
+**What was bought stays where it can be read.** A call to `cx` fetched from a supplier through the ComChatX gate, and the seller paid for it; a fetch is not repeated, while a file on disk can be read again, and Jev's standing note says both. A call is read as paid where its command, split into words as the shell splits it — quotes removed, line continuations joined, a `bash -c` or `sh -c` string and a `$(…)` read for their own words — holds a word whose last path segment is `cx`, or where its output is `cx`'s receipt. A paid call is never dropped. Its output is read by the receipt's own grammar (one line per path ending `-> <file>` where its answer landed, closed by a `cost:` line; or `--json`'s `paths`, each with its `file`): only where every answer landed may the pass cut it to the head and a note naming those files (`…; what it fetched is on disk at /tenant/…]`); anything else stays whole, and Jev is not asked about it. A paid call behind a script or an alias that shows no `cx` is read like any other call: the receipt `cx` prints into its output is what protects it.
 
 **A pass removes at most half of the context it found**, the oldest of what Jev would let go first; the rest stays as it was. A pass needs a quarter to stand and runs again at the next line, so half is room enough; past it, one pass could leave the model a conversation whose working past is gone, which pi's own summary, written from the whole, would not.
 
@@ -23,6 +23,8 @@ For each tool call outside the first message and pi's recent window, Jev answers
 Text is never edited, and pi's session file keeps every original entry; an edit changes only what the next request carries. A pass that would free under a quarter of the context proposes nothing and records nothing, and so does every failure, leaving one line on stderr; either way pi's own summary follows, as it would without the package. The package hooks nothing of compaction itself, so a manual compaction and overflow recovery stay pi's.
 
 **What Jev sees**: the user's and the model's text, and each tool call's name and input. A tool output goes only as `ok` or `error` and its length. The model's thinking, the system prompt, skills and summaries are never sent.
+
+**Jev is asked at one address only.** The request is never sent on where a redirect points: a redirect is a failure, and the pass proposes nothing.
 
 ## What it needs
 

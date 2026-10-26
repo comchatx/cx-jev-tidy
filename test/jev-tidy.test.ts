@@ -1,6 +1,8 @@
-import { estimateTokens, SettingsManager, type ExtensionAPI, type ContextEditEntryDraft } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, findCutPoint, SettingsManager, type ExtensionAPI, type ContextEditEntryDraft } from "@earendil-works/pi-coding-agent";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { JevError, type JevAsker, type JevQuestions, type JevState } from "../src/core/jev.js";
+import { httpAsker, JevError, type JevAsker, type JevQuestions, type JevState } from "../src/core/jev.js";
 import { assistant, boundaryOver, contextAt, output, result, shell, user, workingSession } from "./conversation.js";
 import { HEAD_CHARS, jevTidy, MAX_FREED, MIN_FREED, PASS_ENTRY, tidy, type Deps, type PassRecord } from "../src/extensions/jev-tidy.js";
 
@@ -242,10 +244,10 @@ describe("the extension pi loads", () => {
 describe("what a pass keeps, and the trace it leaves", () => {
   const ASINS = ["B0A1", "B0A2", "B0A3", "B0A4", "B0A5", "B0A6"];
   const LANDED = ASINS.map((asin) => `/tenant/amazon/us/${asin}/product.json`);
-  // cx's receipt: one line per path, the file it landed at last.
-  const RECEIPT = ASINS.map((asin, n) => `amazon/us/${asin}/product  bought  Keepa  14 tokens  as of 2026-10-26 10:00  -> ${LANDED[n]}`).join("\n");
-  const RAW = JSON.stringify({ lines: [{ path: "keepa /product", outcome: "settled", bytes: 81_920, file: "/tenant/raw/keepa/r-7.json", channel: "platform", meter: "tokens" }], effective: { max_age: "1h" }, note: "n".repeat(400) });
-  const NOT_LANDED = `amazon/us/B9/product  bought  Keepa  14 tokens  settled, not landed: the copy did not arrive\n${"the supplier's words ".repeat(30)}`;
+  // cx's receipt as it renders one: a line per path, the file it landed at last, the money closing it.
+  const RECEIPT = [...ASINS.map((asin, n) => `amazon/us/${asin}/product  fresh  Keepa  as of 2026-10-26T10:00:00Z  -> ${LANDED[n]}`), "cost: settled $0.05 (Keepa: 84 tokens)"].join("\n");
+  const RAW = JSON.stringify({ request_id: "q-1", served_from_tree: false, paths: [{ path: "keepa /product", outcome: { kind: "fresh" }, source: "keepa", file: "/tenant/raw/keepa/r-7.json", bytes: 81_920, raw_record_id: "r-7", http_status: 200, http_headers: [["content-type", "application/json"], ["x-rate-limit", "n".repeat(300)]], channel: "platform key", meter: "tokens" }], cost: [{ source: "keepa", status: "settled", units: 1_200 }] }, null, 2);
+  const NOT_LANDED = ["amazon/us/B9/product  not_landed  Keepa  as of 2026-10-26T10:00:00Z  the gate sold it and the copy did not land", ...Array.from({ length: 8 }, (_, n) => `header: x-trace-${n}: ${"t".repeat(40)}`), "cost: settled $0.01 (Keepa: 14 tokens)"].join("\n");
   function paidSession() {
     const session = workingSession(0, 0);
     session.appendMessage(shell("get", `cx get ${ASINS.map((asin) => `amazon/us/${asin}/product`).join(" ")}`));
@@ -283,7 +285,8 @@ describe("what a pass keeps, and the trace it leaves", () => {
     const calls = after.flatMap((message) => (message.role === "assistant" ? message.content.flatMap((block) => (block.type === "toolCall" ? [block.id] : [])) : []));
     expect(calls).toEqual(["get", "raw", "lost"]);
     expect(after.filter((message) => message.role === "toolResult").map((message) => message.toolCallId)).toEqual(["get", "raw", "lost"]);
-    expect(JSON.stringify(after)).toContain(NOT_LANDED.slice(-40));
+    const lost = after.find((message) => message.role === "toolResult" && message.toolCallId === "lost");
+    expect(lost?.role === "toolResult" ? lost.content : undefined).toEqual([{ type: "text", text: NOT_LANDED }]);
   });
 
   it("records the pass where it ran, after its edits: the context before and after, what it cut and dropped, and what the stubs cost", async () => {
@@ -304,10 +307,8 @@ describe("what a pass keeps, and the trace it leaves", () => {
     const proposed = edits((await tidy(boundaryOver(session), contextAt(120_000), deps))?.entries);
     expect(proposed.length).toBeGreaterThan(0);
     const branch = session.getBranch();
-    // The window as pi counts it: back from the newest message until 60,000 tokens are reached.
-    let kept = 0;
-    let from = branch.length;
-    while (kept < 60_000) { from -= 1; const entry = branch[from]!; kept += entry.type === "message" ? estimateTokens(entry.message) : 0; }
+    // The window is where the pinned pi's own cut point keeps from, for the override's 60,000 tokens.
+    const from = findCutPoint(branch, 0, branch.length, 60_000).firstKeptEntryIndex;
     const touched = proposed.map((edit) => branch.findIndex((entry) => entry.id === edit.targetId));
     expect(Math.max(...touched)).toBeLessThan(from);
     // Six messages back would have reached round 19; the override's window starts rounds before it, and the pass works up to its edge.
@@ -327,5 +328,105 @@ describe("what a pass keeps, and the trace it leaves", () => {
     const rounds = [...new Set(edits(out?.entries).map((edit) => Math.ceil(branch.findIndex((entry) => entry.id === edit.targetId) / 4)))].sort((a, b) => a - b);
     expect(rounds).toEqual(Array.from({ length: rounds.length }, (_, n) => n + 1));
     expect(rounds.length).toBeLessThan(15);
+  });
+});
+
+describe("where a call is paid, read where it is certain", () => {
+  const RECEIPT = ["amazon/us/B0/product  fresh  Keepa  as of 2026-10-26T10:00:00Z  -> /tenant/amazon/us/B0/product.json", ...Array.from({ length: 10 }, (_, n) => `header: x-trace-${n}: ${"t".repeat(40)}`), "cost: settled $0.01 (Keepa: 14 tokens)"].join("\n");
+  /** One shell call with `text` for its output, a long free read after it, and fillers holding the narrow window; Jev lets everything go. */
+  async function pass(command: string, text: string) {
+    const session = workingSession(0, 0);
+    session.appendMessage(shell("paid", command));
+    session.appendMessage(output("paid", text));
+    session.appendMessage(assistant("", [{ id: "free", path: "free.txt" }]));
+    session.appendMessage(result("free", "f".repeat(40_000)));
+    for (let i = 0; i < 6; i += 1) session.appendMessage(user(`filler ${i}`));
+    const { asker, asked } = fakeJev(() => 0.1);
+    const out = await tidy(boundaryOver(session), contextAt(30_000, 100_000), depsWith(asker, NARROW));
+    for (const edit of edits(out?.entries)) session.appendContextEdit(edit.targetId, edit.replacement);
+    const after = session.buildSessionProjection().messages;
+    const paid = after.find((message) => message.role === "toolResult" && message.toolCallId === "paid");
+    return {
+      called: after.some((message) => message.role === "assistant" && message.content.some((block) => block.type === "toolCall" && block.id === "paid")),
+      text: paid?.role === "toolResult" ? (paid.content[0] as { text: string }).text : undefined,
+      asked: asked.flatMap(({ questions }) => Object.keys(questions)),
+      out,
+    };
+  }
+
+  it.each([
+    ["plain", "cx get amazon/us/B0/product"],
+    ["piped", "cx get amazon/us/B0/product | head"],
+    ["after cd", "cd /tenant && cx get amazon/us/B0/product"],
+    ["the record read", "cx raw keepa --record r-7"],
+    ["under env", "env MODE=x cx get amazon/us/B0/product"],
+    ["by its absolute path", "/opt/comchatx/bin/cx get amazon/us/B0/product"],
+    ["by a relative path", "./cx get amazon/us/B0/product"],
+    ["in bash -lc '…'", "bash -lc 'cx get amazon/us/B0/product'"],
+    ['in sh -c "…"', 'sh -c "cx raw keepa --json"'],
+    ["quoted", "'cx' get amazon/us/B0/product"],
+    ["with its verb quoted", "cx 'get' amazon/us/B0/product"],
+    ["over a line continuation", "cx \\\n get amazon/us/B0/product"],
+    ["in a substitution", "echo $(cx get amazon/us/B0/product)"],
+    ["in a quoted substitution", 'echo "$(cx get amazon/us/B0/product)"'],
+  ])("never drops a cx call %s: an output that is no whole receipt stays whole and unasked, and a receipt is cut to its file", async (_, command) => {
+    // What `| head` leaves of a receipt is no receipt: only the command says the call was paid.
+    const partial = RECEIPT.split("\n").slice(0, -1).join("\n");
+    const run = await pass(command, partial);
+    expect([run.called, run.text, run.asked.includes("call_t1")]).toEqual([true, partial, false]);
+    const whole = await pass(command, RECEIPT);
+    expect(whole.text).toBe(`${RECEIPT.slice(0, HEAD_CHARS)}\n[cx-jev-tidy cut ${RECEIPT.length - HEAD_CHARS} chars of this tool result; what it fetched is on disk at /tenant/amazon/us/B0/product.json]`);
+  });
+
+  it("reads a script that shows no cx by what it printed: cx's receipt protects it, and an output that is no receipt goes as any other", async () => {
+    const receipted = await pass("./fetch-products.sh", RECEIPT);
+    expect([receipted.called, receipted.text?.endsWith("on disk at /tenant/amazon/us/B0/product.json]")]).toEqual([true, true]);
+    const silent = await pass("./fetch-products.sh", "p".repeat(5_000));
+    expect([silent.called, silent.text]).toEqual([false, undefined]);
+  });
+
+  it("keeps whole and unasked a receipt that says an answer did not land, whatever a supplier's words name as a file", async () => {
+    const text = ["amazon/us/B0/product  failed (supplier)  Keepa said no", `Vendor diagnostic: {"file":"/vendor/internal/not-a-local-receipt.json"} ${"w".repeat(600)}`, "cost: settled $0.01 (Keepa: 14 tokens)"].join("\n");
+    const run = await pass("cx get amazon/us/B0/product", text);
+    expect([run.called, run.text, run.asked.includes("call_t1")]).toEqual([true, text, false]);
+    // The same in --json: the file a supplier names is no landed answer's.
+    const json = JSON.stringify({ served_from_tree: false, paths: [{ path: "amazon/us/B0/product", outcome: { kind: "not_landed", message: "x" }, vendor_text: JSON.stringify({ file: "/vendor/x.json" }), note: "n".repeat(600) }], cost: [] });
+    expect((await pass("cx get amazon/us/B0/product --json", json)).text).toBe(json);
+  });
+
+  it("takes a --json receipt's file from its own field, escapes resolved", async () => {
+    const file = '/tenant/raw/keepa/answer-with-"quote.json';
+    const text = JSON.stringify({ served_from_tree: false, paths: [{ path: "keepa /product", outcome: { kind: "fresh" }, file, http_headers: [["x", "h".repeat(600)]] }], cost: [] });
+    const run = await pass("cx raw keepa --json", text);
+    expect(run.text?.endsWith(`; what it fetched is on disk at ${file}]`)).toBe(true);
+  });
+
+  it("holds what pi's own cut point keeps where the newest result alone passes the window: the assistant with both its calls", async () => {
+    const session = workingSession(0, 0);
+    session.appendMessage(assistant("Reading both.", [{ id: "old", path: "a" }, { id: "new", path: "b" }]));
+    session.appendMessage(result("old", "a".repeat(120_000)));
+    session.appendMessage(result("new", "b".repeat(100_000)));
+    const branch = session.getBranch();
+    expect(findCutPoint(branch, 0, branch.length, 20_000).firstKeptEntryIndex).toBe(1);
+    const { asker, asked } = fakeJev(() => 0.1);
+    const out = await tidy(boundaryOver(session), contextAt(60_000, 100_000), depsWith(asker, { enabled: true, reserveTokens: 50_000, keepRecentTokens: 20_000 }));
+    expect([out, asked]).toEqual([{}, []]);
+  });
+});
+
+describe("the request to Jev", () => {
+  it("goes where it was addressed and nowhere else: a redirect is a failure that proposes nothing", async () => {
+    let reached = 0;
+    const sink = createServer((_req, res) => { reached += 1; res.writeHead(200, { "content-type": "application/json" }).end('{"answers":{}}'); });
+    const redirect = createServer((_req, res) => { res.writeHead(307, { location: `http://127.0.0.1:${(sink.address() as AddressInfo).port}/elsewhere` }).end(); });
+    for (const server of [sink, redirect]) await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    try {
+      const deps = depsWith(httpAsker(`http://127.0.0.1:${(redirect.address() as AddressInfo).port}/systemone`, {}, 2_000));
+      expect(await tidy(boundaryOver(workingSession(20, 20_000)), contextAt(210_000), deps)).toEqual({});
+      expect(reached).toBe(0);
+      expect(deps.lines).toEqual(["cx-jev-tidy: refused: Jev could not be reached; pi's summary follows"]);
+    } finally {
+      for (const server of [sink, redirect]) { server.closeAllConnections(); await new Promise<void>((done) => server.close(() => done())); }
+    }
   });
 });

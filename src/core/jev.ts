@@ -47,7 +47,7 @@ export const httpAsker = (url: string, headers: Readonly<Record<string, string>>
   async ask(state, questions) {
     let response: Response;
     try {
-      response = await fetch(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: jevBody(state, questions), signal: AbortSignal.timeout(timeoutMs) });
+      response = await fetch(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: jevBody(state, questions), redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
       return parseJevResponse(response.status, await response.text());
     } catch (error) {
       if (error instanceof JevError) throw error;

@@ -10,8 +10,6 @@ export type TidyMessage = {
   readonly text: string;
   readonly toolCalls: readonly { readonly id: string; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }[];
   readonly result?: { readonly toolCallId: string; readonly chars: number; readonly isError: boolean };
-  /** What the message costs in the model's context, as pi estimates it. */
-  readonly tokens: number;
 };
 
 /** A tool call paired with its result. */
@@ -67,18 +65,6 @@ function abridge(text: string, head: number, tail: number): string {
 
 export const isPinned = (index: number, recentFrom: number): boolean => index === 0 || index >= recentFrom;
 
-/**
- * Where pi's recent window starts: walking back from the newest message, the one at which the messages from there on reach
- * `keepRecentTokens`, as pi's own cut point counts them; the whole conversation where they never do.
- */
-export function recentFrom(messages: readonly TidyMessage[], keepRecentTokens: number): number {
-  let kept = 0;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    kept += messages[index]!.tokens;
-    if (kept >= keepRecentTokens) return index;
-  }
-  return 0;
-}
 
 /**
  * Pairs every tool call with its result; a call without a result is not a candidate (there is nothing to drop yet). A result belongs to the

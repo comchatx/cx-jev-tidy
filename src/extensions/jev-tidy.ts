@@ -1,5 +1,6 @@
 import {
   estimateTokens,
+  findCutPoint,
   getAgentDir,
   SettingsManager,
   shouldCompact,
@@ -9,10 +10,12 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ProjectedSessionEntry,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { decide, type CallDecision } from "../core/decide.js";
 import { httpAsker, JevError, type JevAsker } from "../core/jev.js";
-import { recentFrom, type TidyMessage, type ToolCall } from "../core/state.js";
+import { readReceipt, runsCx } from "../core/paid.js";
+import type { TidyMessage, ToolCall } from "../core/state.js";
 
 type AgentMessage = ProjectedSessionEntry["messages"][number];
 type Content = Extract<AgentMessage, { role: "assistant" }>["content"];
@@ -54,26 +57,40 @@ function readMessages(entries: readonly ProjectedSessionEntry[]): { readonly mes
     const message = projected[0];
     if (sourceEntry.type !== "message" || projected.length !== 1 || message === undefined) continue;
     const entryId = sourceEntry.id;
-    if (message.role === "user") messages.push({ entryId, role: "user", text: textOf(message.content), toolCalls: [], tokens: estimateTokens(message) });
+    if (message.role === "user") messages.push({ entryId, role: "user", text: textOf(message.content), toolCalls: [] });
     else if (message.role === "assistant") {
       const toolCalls = message.content.flatMap((block) => (block.type === "toolCall" ? [{ id: block.id, name: block.name, arguments: block.arguments }] : []));
-      messages.push({ entryId, role: "assistant", text: textOf(message.content), toolCalls, tokens: estimateTokens(message) });
+      messages.push({ entryId, role: "assistant", text: textOf(message.content), toolCalls });
     } else if (message.role === "toolResult") {
-      messages.push({ entryId, role: "toolResult", text: "", toolCalls: [], result: { toolCallId: message.toolCallId, chars: textOf(message.content).length, isError: message.isError }, tokens: estimateTokens(message) });
+      messages.push({ entryId, role: "toolResult", text: "", toolCalls: [], result: { toolCallId: message.toolCallId, chars: textOf(message.content).length, isError: message.isError } });
     } else continue;
     byEntry.set(entryId, message);
   }
   return { messages, byEntry };
 }
 
-/** A call that buys from a supplier: `cx get` or `cx raw` in a shell command. Its answer cost the seller money and is not fetched twice. */
-const PAID = /(?:^|[\s;&|(`])cx\s+(?:get|raw)\b/;
-export const isPaid = (input: Readonly<Record<string, unknown>>): boolean => typeof input["command"] === "string" && PAID.test(input["command"]);
+/**
+ * Whether a call bought from a supplier, and where its answers landed: paid where its command runs `cx` in any visible spelling or its
+ * output is `cx`'s receipt; its files only where that receipt, read by its grammar, says every answer landed. A paid call with no file
+ * stays whole. A call the reader cannot place is judged as any other.
+ */
+export function provenance(input: Readonly<Record<string, unknown>>, output: string): { readonly paid: boolean; readonly landed: readonly string[] } {
+  const receipt = readReceipt(output);
+  return { paid: receipt !== undefined || (typeof input["command"] === "string" && runsCx(input["command"])), landed: receipt?.landed ?? [] };
+}
 
-/** The files a `cx` receipt says its answers landed at: `-> <path>` on a text line, `"file"` in `--json`; each once, in order. */
-export function landedAt(text: string): readonly string[] {
-  const paths = [...text.matchAll(/(?:^|\s)-> (\/\S+)/gm), ...text.matchAll(/"file"\s*:\s*"(\/[^"]+)"/g)].map((match) => match[1]!);
-  return [...new Set(paths)];
+/**
+ * Where pi's recent window starts, as the pinned pi's own cut point finds it for `keepRecentTokens` over what the model sees now: an entry
+ * a past edit left empty counts for nothing, one it cut counts as cut. The entry ids from there on.
+ */
+export function keptFrom(entries: readonly ProjectedSessionEntry[], keepRecentTokens: number): ReadonlySet<string> {
+  const seen = entries.map(({ sourceEntry, messages }): SessionEntry => {
+    if (sourceEntry.type !== "message") return sourceEntry;
+    return messages.length === 1 ? { ...sourceEntry, message: messages[0]! } : { type: "custom", customType: "cx-jev-tidy-omitted", id: sourceEntry.id, parentId: sourceEntry.parentId, timestamp: sourceEntry.timestamp };
+  });
+  const after = entries.findLastIndex((entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0) + 1;
+  const { firstKeptEntryIndex } = findCutPoint(seen, after, seen.length, keepRecentTokens);
+  return new Set(entries.slice(firstKeptEntryIndex).map((entry) => entry.sourceEntry.id));
 }
 
 /**
@@ -115,9 +132,10 @@ export function editsFor(decisions: readonly CallDecision[], messages: readonly 
     const resultEntry = messages[call.resultIndex]!.entryId;
     const result = byEntry.get(resultEntry)!;
     if (result.role !== "toolResult") continue;
-    const paid = isPaid(call.input);
     const text = textOf(result.content);
-    const cutText = cutResult(text, result.isError, result.content.filter((block) => block.type !== "text").length, paid ? landedAt(text) : []);
+    const { paid, landed } = provenance(call.input, text);
+    if (paid && landed.length === 0) continue;
+    const cutText = cutResult(text, result.isError, result.content.filter((block) => block.type !== "text").length, landed);
     const content = [{ type: "text" as const, text: cutText }];
     const cutting = cutText === text ? undefined : estimateTokens(result) - estimateTokens({ ...result, content });
     if (action === "drop_call" && !paid) {
@@ -169,9 +187,12 @@ export async function tidy(event: BoundaryState, ctx: ExtensionContext, deps: De
     // A paid answer whose receipt names no file has nowhere else to be read from: it stays whole and Jev is not asked about it.
     const whole = (call: Pick<ToolCall, "input" | "resultIndex">): boolean => {
       const result = byEntry.get(messages[call.resultIndex]!.entryId);
-      return isPaid(call.input) && result?.role === "toolResult" && landedAt(textOf(result.content)).length === 0;
+      const { paid, landed } = provenance(call.input, result?.role === "toolResult" ? textOf(result.content) : "");
+      return paid && landed.length === 0;
     };
-    const { decisions, requests } = await decide(messages, deps.asker, { recentFrom: recentFrom(messages, usage.keepRecentTokens), whole });
+    const kept = keptFrom(event.context.contextEntries, usage.keepRecentTokens);
+    const recent = messages.findIndex((message) => kept.has(message.entryId));
+    const { decisions, requests } = await decide(messages, deps.asker, { recentFrom: recent === -1 ? messages.length : recent, whole });
     const pass = editsFor(decisions, messages, byEntry, MAX_FREED * usage.tokens);
     if (pass.freed < MIN_FREED * usage.tokens) {
       if (requests > 0) deps.log(`cx-jev-tidy: freed ${pass.freed} of ${usage.tokens} tokens, under a quarter; pi's summary follows`);
