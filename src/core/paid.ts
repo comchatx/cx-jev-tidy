@@ -1,51 +1,8 @@
 /**
- * Whether a tool call bought from a supplier, read only where it is certain: the shell words of its command, and the receipt `cx` prints.
+ * Whether a tool call bought from a supplier, read only where it is certain: by the receipt `cx` prints, the one truth source.
  * The receipt's grammar is the one `cx` renders (ComChatX's `src/cx/receipt.ts`): one line per path, `-> <file>` last on a line whose
  * answer landed, the money on a closing `cost:` line; or, with `--json`, one object whose `paths` each name a `file`.
  */
-
-const SEPARATORS = new Set([";", "&", "|", "(", ")", "`", "<", ">", "\n"]);
-const NESTED = /[\s;&|`]|\$\(/;
-const DEPTH = 4;
-
-/**
- * The words a shell would see in `command`, quotes removed and line continuations joined; a word that itself holds a command — a
- * `bash -lc '…'` string, a quoted `$(…)` — is read for its words too.
- */
-export function shellWords(command: string, depth = 0): readonly string[] {
-  const words: string[] = [];
-  let word: string | undefined;
-  const end = (): void => { if (word !== undefined) words.push(word); word = undefined; };
-  for (let at = 0; at < command.length; at += 1) {
-    const char = command[at]!;
-    if (char === "\\") {
-      const next = command[at + 1];
-      at += 1;
-      if (next === undefined || next === "\n") continue;
-      word = (word ?? "") + next;
-    } else if (char === "'") {
-      const close = command.indexOf("'", at + 1);
-      word = (word ?? "") + command.slice(at + 1, close === -1 ? command.length : close);
-      at = close === -1 ? command.length : close;
-    } else if (char === '"') {
-      let text = "";
-      for (at += 1; at < command.length && command[at] !== '"'; at += 1) {
-        if (command[at] === "\\" && at + 1 < command.length && '"\\$`\n'.includes(command[at + 1]!)) {
-          at += 1;
-          if (command[at] !== "\n") text += command[at];
-        } else text += command[at];
-      }
-      word = (word ?? "") + text;
-    } else if (char === " " || char === "\t") end();
-    else if (SEPARATORS.has(char)) end();
-    else word = (word ?? "") + char;
-  }
-  end();
-  return depth >= DEPTH ? words : words.flatMap((one) => (NESTED.test(one) ? [one, ...shellWords(one, depth + 1)] : [one]));
-}
-
-/** A command that runs `cx` in any visible spelling: a word whose last path segment is `cx`. */
-export const runsCx = (command: string): boolean => shellWords(command).some((one) => one.replace(/\/+$/, "").split("/").at(-1) === "cx");
 
 /** What a receipt says of its answers: the files they landed at, or none where any answer did not land or a line cannot be read. */
 export type ReceiptRead = { readonly landed: readonly string[] };

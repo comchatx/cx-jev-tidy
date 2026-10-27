@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { decide, type CallDecision } from "../core/decide.js";
 import { httpAsker, JevError, type JevAsker } from "../core/jev.js";
-import { readReceipt, runsCx } from "../core/paid.js";
+import { readReceipt } from "../core/paid.js";
 import type { TidyMessage, ToolCall } from "../core/state.js";
 
 type AgentMessage = ProjectedSessionEntry["messages"][number];
@@ -69,13 +69,13 @@ function readMessages(entries: readonly ProjectedSessionEntry[]): { readonly mes
 }
 
 /**
- * Whether a call bought from a supplier, and where its answers landed: paid where its command runs `cx` in any visible spelling or its
- * output is `cx`'s receipt; its files only where that receipt, read by its grammar, says every answer landed. A paid call with no file
- * stays whole. A call the reader cannot place is judged as any other.
+ * Whether a call bought from a supplier, and where its answers landed: paid where its output is `cx`'s receipt, whatever the command
+ * says; its files only where that receipt, read by its grammar, says every answer landed. A paid call with no file stays whole. A call
+ * whose receipt the reader cannot see, cut by a pipe or behind a script that prints something else, is judged as any other.
  */
-export function provenance(input: Readonly<Record<string, unknown>>, output: string): { readonly paid: boolean; readonly landed: readonly string[] } {
+export function provenance(output: string): { readonly paid: boolean; readonly landed: readonly string[] } {
   const receipt = readReceipt(output);
-  return { paid: receipt !== undefined || (typeof input["command"] === "string" && runsCx(input["command"])), landed: receipt?.landed ?? [] };
+  return { paid: receipt !== undefined, landed: receipt?.landed ?? [] };
 }
 
 /** A message pi may cut the context before: anything but a tool result, which stays with its call. */
@@ -160,7 +160,7 @@ export function editsFor(decisions: readonly CallDecision[], messages: readonly 
     const result = byEntry.get(resultEntry)!;
     if (result.role !== "toolResult") continue;
     const text = textOf(result.content);
-    const { paid, landed } = provenance(call.input, text);
+    const { paid, landed } = provenance(text);
     if (paid && landed.length === 0) continue;
     const cutText = cutResult(text, result.isError, result.content.filter((block) => block.type !== "text").length, landed);
     const content = [{ type: "text" as const, text: cutText }];
@@ -214,7 +214,7 @@ export async function tidy(event: BoundaryState, ctx: ExtensionContext, deps: De
     // A paid answer whose receipt names no file has nowhere else to be read from: it stays whole and Jev is not asked about it.
     const whole = (call: Pick<ToolCall, "input" | "resultIndex">): boolean => {
       const result = byEntry.get(messages[call.resultIndex]!.entryId);
-      const { paid, landed } = provenance(call.input, result?.role === "toolResult" ? textOf(result.content) : "");
+      const { paid, landed } = provenance(result?.role === "toolResult" ? textOf(result.content) : "");
       return paid && landed.length === 0;
     };
     const kept = keptFrom(event.context.contextEntries, usage.keepRecentTokens);

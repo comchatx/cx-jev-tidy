@@ -3,7 +3,6 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { batchCalls, decideCall, questionsFor } from "../src/core/decide.js";
 import { httpAsker, JevError, JEV_MODEL } from "../src/core/jev.js";
-import { runsCx, shellWords } from "../src/core/paid.js";
 import { collectToolCalls, fitState, type TidyMessage } from "../src/core/state.js";
 
 const call = (i: number): TidyMessage => ({ entryId: `a${i}`, role: "assistant", text: `Step ${i}: ${"reasoning ".repeat(80)}`, toolCalls: [{ id: `c${i}`, name: "read", arguments: { path: `file-${i}.csv`, note: "x".repeat(900) } }] });
@@ -99,14 +98,5 @@ describe("asking Jev over HTTP", () => {
 
   it("reads an unreachable proxy as refused", async () => {
     await expect(httpAsker("http://127.0.0.1:1/v1/systemone", {}, 2_000).ask({}, {})).rejects.toMatchObject({ kind: "refused" });
-  });
-});
-
-describe("reading a shell command's words", () => {
-  it("removes quotes and joins continuations as the shell does, reads a nested command's words, and stops at an unclosed quote", () => {
-    expect(shellWords(`a "b \\"c\\" \\$d" 'e f'g h\\ i \\\nj`)).toEqual(["a", 'b "c" $d', "b", "c", "$d", "e fg", "e", "fg", "h i", "h", "i", "j"]);
-    expect(shellWords("x 'unclosed cx")).toEqual(["x", "unclosed cx", "unclosed", "cx"]);
-    expect(shellWords("end\\")).toEqual(["end"]);
-    expect([runsCx("/usr/local/bin/cx/ get"), runsCx("cxx get"), runsCx("echo cx-sources")]).toEqual([true, false, false]);
   });
 });

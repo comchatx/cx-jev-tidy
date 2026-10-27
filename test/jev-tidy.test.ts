@@ -356,28 +356,13 @@ describe("where a call is paid, read where it is certain", () => {
     };
   }
 
-  it.each([
-    ["plain", "cx get amazon/us/B0/product"],
-    ["piped", "cx get amazon/us/B0/product | head"],
-    ["after cd", "cd /tenant && cx get amazon/us/B0/product"],
-    ["the record read", "cx raw keepa --record r-7"],
-    ["under env", "env MODE=x cx get amazon/us/B0/product"],
-    ["by its absolute path", "/opt/comchatx/bin/cx get amazon/us/B0/product"],
-    ["by a relative path", "./cx get amazon/us/B0/product"],
-    ["in bash -lc '…'", "bash -lc 'cx get amazon/us/B0/product'"],
-    ['in sh -c "…"', 'sh -c "cx raw keepa --json"'],
-    ["quoted", "'cx' get amazon/us/B0/product"],
-    ["with its verb quoted", "cx 'get' amazon/us/B0/product"],
-    ["over a line continuation", "cx \\\n get amazon/us/B0/product"],
-    ["in a substitution", "echo $(cx get amazon/us/B0/product)"],
-    ["in a quoted substitution", 'echo "$(cx get amazon/us/B0/product)"'],
-  ])("never drops a cx call %s: an output that is no whole receipt stays whole and unasked, and a receipt is cut to its file", async (_, command) => {
-    // What `| head` leaves of a receipt is no receipt: only the command says the call was paid.
+  it("reads a cx call by its receipt alone: one whose receipt a pipe cut is asked of Jev and may go, and one whose receipt is whole is cut to its file", async () => {
+    // What `| head` leaves of a receipt is no receipt, and the command's spelling is not read.
     const partial = RECEIPT.split("\n").slice(0, -1).join("\n");
-    const run = await pass(command, partial);
-    expect([run.called, run.text, run.asked.includes("call_t1")]).toEqual([true, partial, false]);
-    const whole = await pass(command, RECEIPT);
-    expect(whole.text).toBe(`${RECEIPT.slice(0, HEAD_CHARS)}\n[cx-jev-tidy cut ${RECEIPT.length - HEAD_CHARS} chars of this tool result; what it fetched is on disk at /tenant/amazon/us/B0/product.json]`);
+    const cut = await pass("cx get amazon/us/B0/product | head", partial);
+    expect([cut.called, cut.text, cut.asked.includes("call_t1")]).toEqual([false, undefined, true]);
+    const whole = await pass("cx get amazon/us/B0/product", RECEIPT);
+    expect([whole.called, whole.text]).toEqual([true, `${RECEIPT.slice(0, HEAD_CHARS)}\n[cx-jev-tidy cut ${RECEIPT.length - HEAD_CHARS} chars of this tool result; what it fetched is on disk at /tenant/amazon/us/B0/product.json]`]);
   });
 
   it("reads a script that shows no cx by what it printed: cx's receipt protects it, and an output that is no receipt goes as any other", async () => {
