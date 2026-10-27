@@ -23,7 +23,7 @@ export type ToolCall = {
   readonly resultIndex: number;
   readonly resultChars: number;
   readonly isError: boolean;
-  /** In the first or the newest preserved messages; never a candidate. */
+  /** In the first message or pi's recent window, or held whole by the caller; never a candidate. */
   readonly pinned: boolean;
 };
 
@@ -33,7 +33,7 @@ export type CompactionState = { readonly context: string; readonly goal: string;
 export type FittedState = { readonly state: CompactionState; readonly tokens: number; readonly stage: string };
 
 export const STATE_CONTEXT =
-  "A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, or the full output of that call, still needs to stay in the history verbatim. Whatever is not kept is deleted permanently, but the assistant can always re-run a tool or re-read a file.";
+  "A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, or the full output of that call, still needs to stay in the history verbatim. Whatever is not kept is deleted from what the assistant sees. A file on disk can be read again; a supplier fetch (`cx get`, `cx raw`) costs the seller money and is not repeated.";
 
 /** Successive caps on the serialised tool input included per call. */
 const INPUT_CHARS = [1000, 200, 60] as const;
@@ -63,14 +63,15 @@ function abridge(text: string, head: number, tail: number): string {
   return `${text.slice(0, head)}\n[… ${text.length - head - tail} chars omitted …]\n${text.slice(-tail)}`;
 }
 
-export const isPinned = (index: number, total: number, preserveRecentMessages: number): boolean => index === 0 || index >= total - preserveRecentMessages;
+export const isPinned = (index: number, recentFrom: number): boolean => index === 0 || index >= recentFrom;
+
 
 /**
  * Pairs every tool call with its result; a call without a result is not a candidate (there is nothing to drop yet). A result belongs to the
  * nearest earlier call carrying its id that has no result yet, as it stands in pi's record, so an id a provider uses in two turns pairs each
  * call with its own result.
  */
-export function collectToolCalls(messages: readonly TidyMessage[], preserveRecentMessages: number): ToolCall[] {
+export function collectToolCalls(messages: readonly TidyMessage[], recent: number, whole: (call: Omit<ToolCall, "id" | "pinned">) => boolean = () => false): ToolCall[] {
   const open: { readonly callIndex: number; readonly call: TidyMessage["toolCalls"][number]; result?: { readonly index: number; readonly chars: number; readonly isError: boolean } }[] = [];
   messages.forEach((message, index) => {
     for (const call of message.toolCalls) open.push({ callIndex: index, call });
@@ -82,17 +83,8 @@ export function collectToolCalls(messages: readonly TidyMessage[], preserveRecen
   const calls: ToolCall[] = [];
   for (const { callIndex, call, result } of open) {
     if (result === undefined) continue;
-    calls.push({
-      id: `t${calls.length + 1}`,
-      toolCallId: call.id,
-      tool: call.name,
-      input: call.arguments,
-      callIndex,
-      resultIndex: result.index,
-      resultChars: result.chars,
-      isError: result.isError,
-      pinned: isPinned(callIndex, messages.length, preserveRecentMessages) || isPinned(result.index, messages.length, preserveRecentMessages),
-    });
+    const paired = { toolCallId: call.id, tool: call.name, input: call.arguments, callIndex, resultIndex: result.index, resultChars: result.chars, isError: result.isError };
+    calls.push({ id: `t${calls.length + 1}`, ...paired, pinned: isPinned(callIndex, recent) || isPinned(result.index, recent) || whole(paired) });
   }
   return calls;
 }
@@ -165,7 +157,7 @@ export const goalFromMessages = (messages: readonly TidyMessage[]): string =>
  * one line each, then old messages that carry no call are left out, then runs of old call-only messages are folded into one entry. Throws
  * when even that is too big.
  */
-export function fitState(messages: readonly TidyMessage[], calls: readonly ToolCall[], options: { readonly maxStateTokens: number; readonly preserveRecentMessages: number }): FittedState {
+export function fitState(messages: readonly TidyMessage[], calls: readonly ToolCall[], options: { readonly maxStateTokens: number; readonly recentFrom: number }): FittedState {
   const goal = goalFromMessages(messages);
   const stateOf = (history: HistoryEntry[]): CompactionState => ({ context: STATE_CONTEXT, goal, history });
   const entryTokens = (entry: HistoryEntry): number => estimateTokens(JSON.stringify(entry)) + 1;
@@ -197,7 +189,7 @@ export function fitState(messages: readonly TidyMessage[], calls: readonly ToolC
     if (fits()) return fitted(history, tokens, `inputs<=${limit}`);
   }
 
-  const pinned = (entry: HistoryEntry): boolean => isPinned(entry.i, messages.length, options.preserveRecentMessages);
+  const pinned = (entry: HistoryEntry): boolean => isPinned(entry.i, options.recentFrom);
   const indices = history.map((_, index) => index);
   const order = [...indices.filter((index) => !pinned(history[index]!)), ...indices.filter((index) => pinned(history[index]!))];
 

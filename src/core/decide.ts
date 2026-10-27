@@ -2,8 +2,11 @@
 import { JevError, noulAnswer, type JevAsker, type JevQuestions } from "./jev.js";
 import { collectToolCalls, estimateTokens, fitState, type CompactionState, type TidyMessage, type ToolCall } from "./state.js";
 
-/** The library's defaults, kept: a call or result stays at a keep probability of one half, the first and newest six messages are pinned. */
-export const OPTIONS = Object.freeze({ keepThreshold: 0.5, preserveRecentMessages: 6, maxStateTokens: 25_000, maxRequestTokens: 30_000 });
+/** The library's defaults, kept: a call or result stays at a keep probability of one half. Which messages are pinned is the caller's. */
+export const OPTIONS = Object.freeze({ keepThreshold: 0.5, maxStateTokens: 25_000, maxRequestTokens: 30_000 });
+
+/** What a pass holds back from Jev: the messages from `recentFrom` on (pi's recent window), and any call `whole` says must stay. */
+export type Pins = { readonly recentFrom: number; readonly whole?: (call: Omit<ToolCall, "id" | "pinned">) => boolean };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 20;
@@ -56,15 +59,16 @@ async function askBatch(asker: JevAsker, state: CompactionState, batch: readonly
 }
 
 /**
- * Asks Jev, for every tool call outside the pinned first and newest messages, whether the call and whether its result must stay. The whole
+ * Asks Jev, for every tool call outside the first message, the recent window and the calls held whole, whether the call and whether its
+ * result must stay. The whole
  * history (results omitted, fitted into the state budget) is sent with every batch of questions. Throws when Jev fails or the history cannot
  * be fitted; the caller falls back.
  */
-export async function decide(messages: readonly TidyMessage[], asker: JevAsker): Promise<{ readonly decisions: readonly CallDecision[]; readonly requests: number }> {
-  const calls = collectToolCalls(messages, OPTIONS.preserveRecentMessages);
+export async function decide(messages: readonly TidyMessage[], asker: JevAsker, pins: Pins): Promise<{ readonly decisions: readonly CallDecision[]; readonly requests: number }> {
+  const calls = collectToolCalls(messages, pins.recentFrom, pins.whole);
   const candidates = calls.filter((call) => !call.pinned);
   if (candidates.length === 0) return { decisions: [], requests: 0 };
-  const fitted = fitState(messages, calls, OPTIONS);
+  const fitted = fitState(messages, calls, { maxStateTokens: OPTIONS.maxStateTokens, recentFrom: pins.recentFrom });
   const batches = batchCalls(candidates, fitted.tokens, OPTIONS.maxRequestTokens);
   const answers = new Map<string, readonly [number, number]>();
   for (const map of await Promise.all(batches.map((batch) => askBatch(asker, fitted.state, batch)))) for (const [id, answer] of map) answers.set(id, answer);

@@ -45,3 +45,8 @@ export function boundaryOver(session: SessionManager, type: "turn_end" | "agent_
 /** The slice of the extension context the pass reads: the model, and pi's context usage for it. */
 export const contextAt = (tokens: number | null, contextWindow = 1_000_000): ExtensionContext =>
   ({ model: { provider: "fake", id: "fake-1m", contextWindow }, cwd: "/tenant", getContextUsage: () => ({ tokens, contextWindow, percent: tokens === null ? null : (tokens / contextWindow) * 100 }) }) as unknown as ExtensionContext;
+
+/** A turn that runs one shell command through pi's bash tool. */
+export const shell = (id: string, command: string): Message =>
+  ({ ...assistant(""), content: [{ type: "toolCall", id, name: "bash", arguments: { command } }], stopReason: "toolUse" }) as Message;
+export const output = (id: string, text: string): Message => ({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text }], isError: false, timestamp: 0 }) as Message;

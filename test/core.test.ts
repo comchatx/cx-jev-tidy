@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { batchCalls, decideCall, OPTIONS, questionsFor } from "../src/core/decide.js";
+import { batchCalls, decideCall, questionsFor } from "../src/core/decide.js";
 import { httpAsker, JevError, JEV_MODEL } from "../src/core/jev.js";
 import { collectToolCalls, fitState, type TidyMessage } from "../src/core/state.js";
 
@@ -13,15 +13,19 @@ const conversation = (rounds: number): TidyMessage[] => [
 ];
 
 describe("the decision core", () => {
-  it("pins the first message and the newest six, and pairs each call with its result", () => {
-    const calls = collectToolCalls(conversation(10), OPTIONS.preserveRecentMessages);
+  it("pins the first message and every call reaching the recent window it is given, and pairs each call with its result", () => {
+    const messages = conversation(10);
+    // The window starting at round 7's result: round 7's call is before it, its result in it, so the pair stays.
+    const calls = collectToolCalls(messages, 14);
     expect(calls).toHaveLength(10);
-    expect(calls.filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c8", "c9", "c10"]);
+    expect(calls.filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c7", "c8", "c9", "c10"]);
     expect(calls[0]).toMatchObject({ id: "t1", toolCallId: "c1", tool: "read", callIndex: 1, resultIndex: 2, resultChars: 20_000 });
+    // A call the caller holds whole is pinned wherever it stands.
+    expect(collectToolCalls(messages, 21, (one) => one.toolCallId === "c2").filter((c) => c.pinned).map((c) => c.toolCallId)).toEqual(["c2"]);
   });
 
   it("keeps a call whose result must stay, cuts a result whose call must stay, and else drops both; a pinned call is always kept", () => {
-    const [unpinned] = collectToolCalls(conversation(10), 6);
+    const [unpinned] = collectToolCalls(conversation(10), 15);
     expect(decideCall(unpinned!, 0.1, 0.9, 0.5)).toBe("keep");
     expect(decideCall(unpinned!, 0.9, 0.1, 0.5)).toBe("drop_result");
     expect(decideCall(unpinned!, 0.1, 0.1, 0.5)).toBe("drop_call");
@@ -30,15 +34,15 @@ describe("the decision core", () => {
 
   it("shrinks a long history in stages to fit Jev's state budget, and refuses one it cannot fit", () => {
     const messages = conversation(200);
-    const calls = collectToolCalls(messages, 6);
-    const fitted = fitState(messages, calls, { maxStateTokens: 25_000, preserveRecentMessages: 6 });
+    const calls = collectToolCalls(messages, 395);
+    const fitted = fitState(messages, calls, { maxStateTokens: 25_000, recentFrom: 395 });
     expect(fitted.tokens).toBeLessThanOrEqual(25_000);
     expect(fitted.stage).not.toBe("full");
-    expect(() => fitState(messages, calls, { maxStateTokens: 500, preserveRecentMessages: 6 })).toThrow(expect.objectContaining({ kind: "oversize" }));
+    expect(() => fitState(messages, calls, { maxStateTokens: 500, recentFrom: 395 })).toThrow(expect.objectContaining({ kind: "oversize" }));
   });
 
   it("batches questions to fit one request beside the state, and refuses when the state leaves no room", () => {
-    const calls = collectToolCalls(conversation(40), 6).filter((c) => !c.pinned);
+    const calls = collectToolCalls(conversation(40), 75).filter((c) => !c.pinned);
     const batches = batchCalls(calls, 29_000, 30_000);
     expect(batches.length).toBeGreaterThan(1);
     expect(batches.flat()).toEqual(calls);
