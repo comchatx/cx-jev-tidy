@@ -29,6 +29,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "comchatx": {
+    "section": "extensions",
+    "builds": [
+      "jev"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
