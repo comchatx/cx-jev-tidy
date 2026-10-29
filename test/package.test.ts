@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
@@ -13,6 +14,13 @@ it("the pinned pi loads the extension from the built dist/, hooking the two boun
   expect(errors).toEqual([]);
   expect(extensions.map((extension) => extension.path)).toEqual([join(ROOT, "dist", "extensions", "jev-tidy.js")]);
   expect(extensions.map((extension) => [...extension.handlers.keys()].sort())).toEqual([["agent_before_settle", "turn_end"]]);
+});
+
+it("says on the Plugins page that it builds on Jev, in the section it is drawn in, adding no words to npm's", () => {
+  const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { readonly comchatx: unknown };
+  expect(manifest.comchatx).toEqual({ section: "extensions", builds: ["jev"] });
+  const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT, encoding: "utf8" })) as { files: { path: string }[] }[];
+  expect(packed[0]!.files.map((file) => file.path)).toContain("package.json");
 });
 
 it("the build refuses a test under src/extensions/, which pi would load as an extension", () => {
