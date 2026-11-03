@@ -1,9 +1,28 @@
 {
   "name": "cx-jev-tidy",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A pi package that cuts stale tool output with Jev when pi's context fills, keeping every word, before pi summarises.",
   "license": "MIT",
   "author": "ComChatX",
+  "comchatx": {
+    "description": {
+      "zh": "对话变长时，先清理不再需要的中间内容，再生成摘要。"
+    },
+    "mark": {
+      "line": "chat"
+    },
+    "section": "extensions",
+    "order": 70,
+    "builds": [
+      {
+        "on": "jev",
+        "why": {
+          "en": "Identifies tool output that is no longer needed.",
+          "zh": "用于判断哪些中间内容可以清理。"
+        }
+      }
+    ]
+  },
   "homepage": "https://github.com/comchatx/cx-jev-tidy#readme",
   "repository": {
     "type": "git",
@@ -28,12 +47,6 @@
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
-  },
-  "comchatx": {
-    "section": "extensions",
-    "builds": [
-      "jev"
-    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
