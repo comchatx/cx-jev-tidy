@@ -1,11 +1,11 @@
 {
   "name": "cx-jev-tidy",
-  "version": "0.1.5",
-  "description": "A pi package that cuts stale tool output with Jev when pi's context fills, keeping every word, before pi summarises.",
+  "version": "0.1.6",
+  "description": "Lets cx clear old step results, but keep every word written.",
   "license": "MIT",
   "author": "ComChatX",
   "comchatx": {
-    "about": "对话变长时，先清理不再需要的中间内容，再生成摘要。",
+    "about": "让 cx 清掉长对话里用不上的步骤结果，说过的话一字不删。",
     "mark": {
       "line": "chat"
     },
