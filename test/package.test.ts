@@ -18,7 +18,7 @@ it("the pinned pi loads the extension from the built dist/, hooking the two boun
 
 it("the comchatx field is the card the product's catalogue record draws, Jev in builds with its reason", () => {
   const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { readonly comchatx: unknown };
-  expect(manifest.comchatx).toEqual({"about":"对话变长时，先清理不再需要的中间内容，再生成摘要。","mark":{"line":"chat"},"section":"extensions","order":70,"builds":[{"on":"jev","why":{"en":"Identifies tool output that is no longer needed.","zh":"用于判断哪些中间内容可以清理。"}}]});
+  expect(manifest.comchatx).toEqual({"about":"让 cx 清掉长对话里用不上的步骤结果，说过的话一字不删。","mark":{"line":"chat"},"section":"extensions","order":70,"builds":[{"on":"jev","why":{"en":"Identifies tool output that is no longer needed.","zh":"用于判断哪些中间内容可以清理。"}}]});
   const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT, encoding: "utf8" })) as { files: { path: string }[] }[];
   expect(packed[0]!.files.map((file) => file.path)).toContain("package.json");
 });
