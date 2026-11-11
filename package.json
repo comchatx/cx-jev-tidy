@@ -1,10 +1,11 @@
 {
   "name": "cx-jev-tidy",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Lets cx clear old step results, but keep every word written.",
   "license": "MIT",
   "author": "ComChatX",
   "comchatx": {
+    "name": "Jev Cleanup",
     "about": "让 cx 清掉长对话里用不上的步骤结果，说过的话一字不删。",
     "mark": {
       "line": "chat"
