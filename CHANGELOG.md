@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Jev's reason in `comchatx.builds`, which the Plugins page shows under the plugins it uses, is the words signed on 2026-11-10: "Judges which step results are no longer needed." and 「判断哪些步骤结果已经用不上。」.
+
 ## 0.1.6
 
 - The card's line and the Overview, in English and Chinese, are the words signed on 2026-11-10: "Lets cx clear old step results, but keep every word written." as npm's `description`, and 「让 cx 清掉长对话里用不上的步骤结果，说过的话一字不删。」 as `comchatx.about`. They said "A pi package that cuts stale tool output with Jev when pi's context fills, keeping every word, before pi summarises." and 「对话变长时，先清理不再需要的中间内容，再生成摘要。」.
