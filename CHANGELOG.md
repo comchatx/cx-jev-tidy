@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- The card's name is the one signed on 2026-11-11, "Jev Cleanup", in `comchatx.name`, the same on the Chinese and the English page.
+
 ## 0.1.7
 
 - Jev's reason in `comchatx.builds`, which the Plugins page shows under the plugins it uses, is the words signed on 2026-11-10: "Judges which step results are no longer needed." and 「判断哪些步骤结果已经用不上。」.
