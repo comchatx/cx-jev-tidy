@@ -1,6 +1,6 @@
 {
   "name": "cx-jev-tidy",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Lets cx clear old step results, but keep every word written.",
   "license": "MIT",
   "author": "ComChatX",
@@ -46,6 +46,9 @@
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@comchatx/typesafe": "^0.1.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

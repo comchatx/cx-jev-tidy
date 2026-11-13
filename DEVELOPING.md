@@ -20,11 +20,11 @@ For each tool call outside the first message and pi's recent window, Jev answers
 
 **A pass leaves a record where it ran.** After its edits it writes one `custom` entry, `customType: "cx-jev-tidy"`, into the session, with the context's tokens before and after the pass, how many outputs it cut and calls it dropped, and what the stubs cost (`stubTokens`, already counted in `after`); pi stamps the entry's time. The model never sees it; a page that reads the session can draw it.
 
-Text is never edited, and pi's session file keeps every original entry; an edit changes only what the next request carries. A pass that would free under a quarter of the context proposes nothing and records nothing, and so does every failure, leaving one line on stderr; either way pi's own summary follows, as it would without the package. The package hooks nothing of compaction itself, so a manual compaction and overflow recovery stay pi's.
+Text is never edited, and pi's session file keeps every original entry; an edit changes only what the next request carries. A pass that would free under a quarter of the context proposes nothing and records nothing, and so does every failure, leaving one line on stderr; either way pi's own summary follows, as it would without the package. With Jev's package off, pi has no Jev to ask: the pass ends there and pi's summary follows. A probability outside 0 to 1 ends the pass as a malformed answer does. The package hooks nothing of compaction itself, so a manual compaction and overflow recovery stay pi's.
 
 **What Jev sees**: the user's and the model's text, and each tool call's name and input. A tool output goes only as `ok` or `error` and its length. The model's thinking, the system prompt, skills and summaries are never sent.
 
-**Jev is asked at one address only.** The request is never sent on where a redirect points: a redirect is a failure, and the pass proposes nothing.
+**Jev is asked through pi's classifier.** The client is `@comchatx/typesafe`'s `askJev`: `typesafe` `jev-latest` at the route Jev's package gives it, with no retry, since a call TypeSafe received is billed even when its answer is lost, and 20,000 ms. Each question is yes-or-no with its instructions alone, which pi sends to TypeSafe as `noul`. The package holds no address, key or HTTP client of its own.
 
 ## Install
 

@@ -12,17 +12,16 @@ import {
   type ProjectedSessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { decide, type CallDecision } from "../core/decide.js";
-import { httpAsker, JevError, type JevAsker } from "../core/jev.js";
+import { askJev } from "@comchatx/typesafe";
+import { JevError, type JevAsker } from "../core/jev.js";
 import { readReceipt } from "../core/paid.js";
 import type { TidyMessage, ToolCall } from "../core/state.js";
 
 type AgentMessage = ProjectedSessionEntry["messages"][number];
 type Content = Extract<AgentMessage, { role: "assistant" }>["content"];
 
-/** The box's own listener; it adds the box token and the platform proxy puts the tenant's TypeSafe key, or the platform's, in the placeholder's place. */
-export const JEV_URL = "http://127.0.0.1:8081/providers/typesafe/v1/systemone";
-const PROXY_HEADERS = Object.freeze({ authorization: "Bearer cmx-placeholder-key" });
-const TIMEOUT_MS = 20_000;
+/** How long one call to Jev is given. */
+export const TIMEOUT_MS = 20_000;
 /** A pass that frees less than this share of the context proposes nothing, and pi's summary follows. */
 export const MIN_FREED = 0.25;
 /**
@@ -39,7 +38,8 @@ export const PASS_ENTRY = "cx-jev-tidy";
 export type PassRecord = { readonly before: number; readonly after: number; readonly cut: number; readonly dropped: number; readonly stubTokens: number };
 
 export type Deps = {
-  readonly asker: JevAsker;
+  /** Who answers Jev's questions for this session: its client, through pi's classifier. */
+  readonly asker: (ctx: ExtensionContext) => JevAsker;
   /** Pi's own compaction settings for the current model: whether tidying is on, and the model's reserve. */
   readonly settings: (ctx: ExtensionContext) => ReturnType<SettingsManager["getCompactionSettings"]>;
   readonly log: (line: string) => void;
@@ -219,7 +219,7 @@ export async function tidy(event: BoundaryState, ctx: ExtensionContext, deps: De
     };
     const kept = keptFrom(event.context.contextEntries, usage.keepRecentTokens);
     const recent = messages.findIndex((message) => kept.has(message.entryId));
-    const { decisions, requests } = await decide(messages, deps.asker, { recentFrom: recent === -1 ? messages.length : recent, whole });
+    const { decisions, requests } = await decide(messages, deps.asker(ctx), { recentFrom: recent === -1 ? messages.length : recent, whole });
     const pass = editsFor(decisions, messages, byEntry, MAX_FREED * usage.tokens);
     if (pass.freed < MIN_FREED * usage.tokens) {
       if (requests > 0) deps.log(`cx-jev-tidy: freed ${pass.freed} of ${usage.tokens} tokens, under a quarter; pi's summary follows`);
@@ -252,8 +252,20 @@ export function jevTidy(deps: Deps): (pi: ExtensionAPI) => void {
   };
 }
 
+/**
+ * Jev's client, `@comchatx/typesafe`'s: pi's classifier with no retry, since a call TypeSafe received is billed even when its answer is lost.
+ * Where it gives no answer, the pass ends on the kind it names.
+ */
+export const classifierAsker = (ctx: ExtensionContext): JevAsker => ({
+  async ask(state, questions) {
+    const answer = await askJev(ctx.modelRegistry, state, questions, { timeoutMs: TIMEOUT_MS });
+    if ("failure" in answer) throw new JevError(answer.failure, `Jev gave no answer (${answer.failure})`);
+    return answer.answers;
+  },
+});
+
 export default jevTidy({
-  asker: httpAsker(JEV_URL, PROXY_HEADERS, TIMEOUT_MS),
+  asker: classifierAsker,
   settings: (ctx) => SettingsManager.create(ctx.cwd, getAgentDir()).getCompactionSettings(ctx.model),
   log: (line) => console.error(line),
 });

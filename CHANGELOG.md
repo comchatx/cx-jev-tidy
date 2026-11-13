@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9
+
+- Jev is asked through pi's classifier by `@comchatx/typesafe`'s client, `askJev`, a dependency from 0.1.3 on, with no retry and 20,000 ms, as `cx-topics` asks it. The package's own HTTP client is gone: its address, its placeholder header, its timeout and its reading of Jev's answer. What TypeSafe receives is unchanged: each question is `noul` with its instructions alone.
+- A failed call is named by the client's kinds (`refused`, `rejected`, `timeout`, `malformed`, `missing-answers`, `no-model`), and every one ends the pass as before: one line on stderr, then pi's summary. With Jev's package off the pass ends and pi's summary follows; a probability outside 0 to 1 ends the pass as a malformed answer does.
+
 ## 0.1.8
 
 - The card's name is the one signed on 2026-11-11, "Jev Cleanup", in `comchatx.name`, the same on the Chinese and the English page.
