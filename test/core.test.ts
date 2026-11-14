@@ -1,8 +1,5 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { batchCalls, decideCall, questionsFor } from "../src/core/decide.js";
-import { httpAsker, JevError, JEV_MODEL } from "../src/core/jev.js";
 import { collectToolCalls, fitState, type TidyMessage } from "../src/core/state.js";
 
 const call = (i: number): TidyMessage => ({ entryId: `a${i}`, role: "assistant", text: `Step ${i}: ${"reasoning ".repeat(80)}`, toolCalls: [{ id: `c${i}`, name: "read", arguments: { path: `file-${i}.csv`, note: "x".repeat(900) } }] });
@@ -48,55 +45,5 @@ describe("the decision core", () => {
     expect(batches.flat()).toEqual(calls);
     expect(Object.keys(questionsFor(calls[0]!))).toEqual(["call_t1", "result_t1"]);
     expect(() => batchCalls(calls, 30_000, 30_000)).toThrow(expect.objectContaining({ kind: "oversize" }));
-  });
-});
-
-describe("asking Jev over HTTP", () => {
-  let server: Server | undefined;
-  afterEach(() => new Promise<void>((resolve) => (server === undefined ? resolve() : server.close(() => resolve()))));
-  const serve = (answer: (req: IncomingMessage, body: string) => { status: number; body: string } | undefined): Promise<string> =>
-    new Promise((resolve) => {
-      server = createServer((req, res) => {
-        let body = "";
-        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-        req.on("end", () => {
-          const reply = answer(req, body);
-          if (reply === undefined) return;
-          res.writeHead(reply.status, { "content-type": "application/json" }).end(reply.body);
-        });
-      }).listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}/v1/systemone`));
-    });
-
-  it("posts the model, the state and the questions with the caller's header, and reads the answers", async () => {
-    let seen: { auth: string | undefined; body: unknown } | undefined;
-    const url = await serve((req, body) => {
-      seen = { auth: req.headers.authorization, body: JSON.parse(body) };
-      return { status: 200, body: JSON.stringify({ model: "jev-1.13.0", answers: { q: { type: "noul", noul: 0.7 } }, usage: { input_tokens: 10, output_tokens: 1 } }) };
-    });
-    const response = await httpAsker(url, { authorization: "Bearer cmx-placeholder-key" }, 5_000).ask({ history: [] }, { q: { type: "noul", instructions: "?" } });
-    expect(response.answers).toEqual({ q: { type: "noul", noul: 0.7 } });
-    expect(seen).toEqual({ auth: "Bearer cmx-placeholder-key", body: { model: JEV_MODEL, state: { history: [] }, questions: { q: { type: "noul", instructions: "?" } } } });
-  });
-
-  it.each([
-    ["a refused route", { status: 404, body: '{"error":"no route"}' }, "refused"],
-    ["a malformed body", { status: 200, body: "not json" }, "malformed"],
-    ["an answer without answers", { status: 200, body: "{}" }, "malformed"],
-  ])("throws on %s, never echoing the body", async (_, reply, kind) => {
-    const url = await serve(() => reply);
-    const failure = await httpAsker(url, {}, 5_000).ask({}, {}).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(JevError);
-    expect(failure).toMatchObject({ kind });
-    expect((failure as Error).message).not.toContain("no route");
-  });
-
-  it("gives up after its timeout", async () => {
-    const url = await serve(() => undefined);
-    await expect(httpAsker(url, {}, 50).ask({}, {})).rejects.toMatchObject({ kind: "timeout" });
-    server!.closeAllConnections();
-  });
-
-  it("reads an unreachable proxy as refused", async () => {
-    await expect(httpAsker("http://127.0.0.1:1/v1/systemone", {}, 2_000).ask({}, {})).rejects.toMatchObject({ kind: "refused" });
   });
 });

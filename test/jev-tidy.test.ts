@@ -1,12 +1,10 @@
-import { estimateTokens, findCutPoint, SessionManager, SettingsManager, type ExtensionAPI, type ContextEditEntryDraft } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, findCutPoint, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionContext, type ContextEditEntryDraft } from "@earendil-works/pi-coding-agent";
 // pi's own compaction plan, which its package root does not export: the witness the window is held against.
 import { prepareCompaction } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { httpAsker, JevError, type JevAsker, type JevQuestions, type JevState } from "../src/core/jev.js";
+import { JevError, type JevAsker, type JevQuestions, type JevState } from "../src/core/jev.js";
 import { assistant, boundaryOver, contextAt, output, result, shell, user, workingSession } from "./conversation.js";
-import { HEAD_CHARS, jevTidy, keptFrom, MAX_FREED, MIN_FREED, PASS_ENTRY, tidy, type Deps, type PassRecord } from "../src/extensions/jev-tidy.js";
+import { classifierAsker, HEAD_CHARS, jevTidy, keptFrom, MAX_FREED, MIN_FREED, PASS_ENTRY, tidy, TIMEOUT_MS, type Deps, type PassRecord } from "../src/extensions/jev-tidy.js";
 
 /** A 1M-window model whose line is 200,000 tokens of context (a ComChatX box's), so a reserve of 800,000. */
 const LINE_SETTINGS = { enabled: true, reserveTokens: 800_000, keepRecentTokens: 20_000 };
@@ -17,15 +15,25 @@ function fakeJev(policy: (question: string) => number = (q) => (q.startsWith("re
   const asker: JevAsker = {
     ask: async (state, questions) => {
       asked.push({ state, questions });
-      return { answers: Object.fromEntries(Object.keys(questions).map((q) => [q, { type: "noul", noul: policy(q) }])) };
+      return Object.fromEntries(Object.keys(questions).map((q) => [q, policy(q)]));
     },
   };
   return { asker, asked };
 }
 
+/** The session's context with pi's registry holding Jev, `classify` answering as given; what it was asked is kept. */
+const asked: { provider: string; id: string; context: unknown; options: unknown }[] = [];
+const withJev = (ctx: ExtensionContext, classify: (context: unknown) => Promise<unknown>, present = true): ExtensionContext => ({
+  ...ctx,
+  modelRegistry: {
+    findOfType: (_type: string, provider: string, id: string) => (present ? { provider, id } : undefined),
+    classify: async (model: { provider: string; id: string }, context: unknown, options: unknown) => { asked.push({ provider: model.provider, id: model.id, context, options }); return classify(context); },
+  },
+}) as unknown as ExtensionContext;
+
 const depsWith = (asker: JevAsker, settings = LINE_SETTINGS): Deps & { lines: string[] } => {
   const lines: string[] = [];
-  return { asker, settings: () => settings, log: (line) => lines.push(line), lines };
+  return { asker: () => asker, settings: () => settings, log: (line) => lines.push(line), lines };
 };
 
 const edits = (entries: readonly unknown[] | undefined): ContextEditEntryDraft[] => ((entries ?? []) as ContextEditEntryDraft[]).filter((entry) => entry.type === "context_edit");
@@ -140,15 +148,16 @@ describe("one Jev pass at a boundary past the line", () => {
 
   it("stays out of the way when pi's settings cannot be read", async () => {
     const { asker, asked } = fakeJev();
-    const deps: Deps = { asker, settings: () => { throw new Error("unreadable settings"); }, log: () => {} };
+    const deps: Deps = { asker: () => asker, settings: () => { throw new Error("unreadable settings"); }, log: () => {} };
     expect(await tidy(boundaryOver(workingSession(20, 20_000)), contextAt(900_000), deps)).toBeUndefined();
     expect(asked).toEqual([]);
   });
 
-  it("proposes nothing for an answer missing a question, which is a malformed answer", async () => {
-    const deps = depsWith({ ask: async () => ({ answers: {} }) });
+  it("proposes nothing for an answer missing a question, which Jev's client names", async () => {
+    const lines: string[] = [];
+    const deps: Deps = { asker: (ctx) => classifierAsker(withJev(ctx, async () => ({ stopReason: "stop", answers: {} }))), settings: () => LINE_SETTINGS, log: (line) => lines.push(line) };
     expect(await tidy(boundaryOver(workingSession(20, 20_000)), contextAt(210_000), deps)).toEqual({});
-    expect(deps.lines).toEqual(["cx-jev-tidy: malformed: Invalid Jev answer for call_t1; pi's summary follows"]);
+    expect(lines).toEqual(["cx-jev-tidy: missing-answers: Jev gave no answer (missing-answers); pi's summary follows"]);
   });
 
   it("asks nothing when every call is pinned", async () => {
@@ -305,7 +314,7 @@ describe("what a pass keeps, and the trace it leaves", () => {
   it("holds pi's recent window for the model in use, its own override included, and proposes nothing inside it", async () => {
     const session = workingSession(20, 20_000);
     const settings = SettingsManager.inMemory({ compaction: { enabled: true, reserveTokens: 900_000, keepRecentTokens: 20_000, modelOverrides: { "fake/fake-1m": { keepRecentTokens: 60_000 } } } });
-    const deps: Deps = { asker: fakeJev(() => 0.1).asker, settings: (ctx) => settings.getCompactionSettings(ctx.model), log: () => {} };
+    const deps: Deps = { asker: () => fakeJev(() => 0.1).asker, settings: (ctx) => settings.getCompactionSettings(ctx.model), log: () => {} };
     const proposed = edits((await tidy(boundaryOver(session), contextAt(120_000), deps))?.entries);
     expect(proposed.length).toBeGreaterThan(0);
     const branch = session.getBranch();
@@ -410,19 +419,24 @@ describe("where a call is paid, read where it is certain", () => {
 });
 
 describe("the request to Jev", () => {
-  it("goes where it was addressed and nowhere else: a redirect is a failure that proposes nothing", async () => {
-    let reached = 0;
-    const sink = createServer((_req, res) => { reached += 1; res.writeHead(200, { "content-type": "application/json" }).end('{"answers":{}}'); });
-    const redirect = createServer((_req, res) => { res.writeHead(307, { location: `http://127.0.0.1:${(sink.address() as AddressInfo).port}/elsewhere` }).end(); });
-    for (const server of [sink, redirect]) await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-    try {
-      const deps = depsWith(httpAsker(`http://127.0.0.1:${(redirect.address() as AddressInfo).port}/systemone`, {}, 2_000));
-      expect(await tidy(boundaryOver(workingSession(20, 20_000)), contextAt(210_000), deps)).toEqual({});
-      expect(reached).toBe(0);
-      expect(deps.lines).toEqual(["cx-jev-tidy: refused: Jev could not be reached; pi's summary follows"]);
-    } finally {
-      for (const server of [sink, redirect]) { server.closeAllConnections(); await new Promise<void>((done) => server.close(() => done())); }
+  it("goes through pi's classifier to TypeSafe's Jev, once, with no retry and 20 s, its questions yes-or-no with their instructions alone", async () => {
+    asked.length = 0;
+    const answer = async (context: unknown) => ({ stopReason: "stop", answers: Object.fromEntries(Object.keys((context as { questions: object }).questions).map((q) => [q, { type: "bool", probability: 0.1 }])) });
+    const deps: Deps = { asker: (ctx) => classifierAsker(withJev(ctx, answer)), settings: () => LINE_SETTINGS, log: () => {} };
+    expect(edits((await tidy(boundaryOver(workingSession(20, 20_000)), contextAt(210_000), deps))?.entries).length).toBeGreaterThan(0);
+    expect(asked.length).toBeGreaterThan(0);
+    for (const one of asked) {
+      expect([one.provider, one.id, one.options]).toEqual(["typesafe", "jev-latest", { maxRetries: 0, timeoutMs: TIMEOUT_MS }]);
+      for (const question of Object.values((one.context as { questions: Record<string, object> }).questions)) expect(Object.keys(question).sort()).toEqual(["instructions", "type"]);
     }
+    expect(TIMEOUT_MS).toBe(20_000);
+  });
+
+  it("asks nothing where pi has no Jev, as with Jev's package off, and pi's summary follows", async () => {
+    const lines: string[] = [];
+    const deps: Deps = { asker: (ctx) => classifierAsker(withJev(ctx, async () => { throw new Error("not asked"); }, false)), settings: () => LINE_SETTINGS, log: (line) => lines.push(line) };
+    expect(await tidy(boundaryOver(workingSession(20, 20_000)), contextAt(210_000), deps)).toEqual({});
+    expect(lines).toEqual(["cx-jev-tidy: no-model: Jev gave no answer (no-model); pi's summary follows"]);
   });
 });
 

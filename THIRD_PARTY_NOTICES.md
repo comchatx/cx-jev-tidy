@@ -1,6 +1,8 @@
 # Third-party notices
 
-`src/core/` is ported from [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) at `e3f262a7f4d42bd8dd32ced30d26176f7cb545b0`, under this licence:
+`src/core/` is ported from [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) at `e3f262a7f4d42bd8dd32ced30d26176f7cb545b0`, under the licence below. The port's HTTP client for Jev (its request, its response parsing and its answer reading, in `src/core/jev.ts`) has left it: Jev is asked through `@comchatx/typesafe`'s client since 0.1.9.
+
+The licence:
 
 ```text
 MIT License
