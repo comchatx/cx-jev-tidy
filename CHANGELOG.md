@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10
+
+- No longer listed for installation: the package no longer carries the `pi-package` keyword. A computer that has it installs and runs it as before.
+
 ## 0.1.9
 
 - Jev is asked through pi's classifier by `@comchatx/typesafe`'s client, `askJev`, a dependency from 0.1.3 on, with no retry and 20,000 ms, as `cx-topics` asks it. The package's own HTTP client is gone: its address, its placeholder header, its timeout and its reading of Jev's answer. What TypeSafe receives is unchanged: each question is `noul` with its instructions alone.
