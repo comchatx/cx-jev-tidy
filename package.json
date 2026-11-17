@@ -1,6 +1,6 @@
 {
   "name": "cx-jev-tidy",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Lets cx clear old step results, but keep every word written.",
   "license": "MIT",
   "author": "ComChatX",
@@ -28,9 +28,6 @@
     "url": "git+https://github.com/comchatx/cx-jev-tidy.git"
   },
   "bugs": "https://github.com/comchatx/cx-jev-tidy/issues",
-  "keywords": [
-    "pi-package"
-  ],
   "type": "module",
   "pi": {
     "extensions": [
